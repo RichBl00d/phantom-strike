@@ -5,10 +5,11 @@
 ║  JARVIS // RedParadox  ·  Authorized test environments only         ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
-An AI agent powered by Claude that autonomously plans, executes, and
-reports on WiFi security assessments using the full 802.11 toolkit.
+An AI agent powered by local Ollama LLM (llama3.1:8b / mistral:7b) that
+autonomously plans, executes, and reports on WiFi security assessments.
 
 Speak to it naturally — it decides the strategy and executes.
+No API key required — runs 100% locally.
 """
 
 import os, sys, time, signal, subprocess, re, csv, json, random, threading
@@ -25,7 +26,7 @@ from rich import box
 from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.markdown import Markdown
-import anthropic
+import ollama
 
 # ── Root check ────────────────────────────────────────────────────────────────
 if os.geteuid() != 0:
@@ -51,7 +52,8 @@ scan_results:  list[dict] = []
 session_findings: list[str] = []
 _rotation_stop = threading.Event()
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Local model — no API key needed
+OLLAMA_MODEL = os.environ.get("PHANTOM_MODEL", "llama3.1:8b")
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 def cleanup(sig=None, frame=None):
@@ -419,122 +421,152 @@ def tool_get_session_status() -> dict:
 
 TOOLS = [
     {
-        "name": "scan_networks",
-        "description": "Scan the airspace for nearby WiFi networks. Returns list of APs with BSSID, SSID, channel, signal strength, and security type. Always scan before attacking.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "duration": {"type": "integer", "description": "Scan duration in seconds (default 20)", "default": 20},
-                "band":     {"type": "string",  "description": "Band: 'bg' (2.4GHz), 'a' (5GHz), 'abg' (both)", "default": "bg", "enum": ["bg","a","abg"]},
+        "type": "function",
+        "function": {
+            "name": "scan_networks",
+            "description": "Scan the airspace for nearby WiFi networks. Returns list of APs with BSSID, SSID, channel, signal strength, and security type. Always scan before attacking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "integer", "description": "Scan duration in seconds (default 20)"},
+                    "band":     {"type": "string",  "description": "Band: bg=2.4GHz, a=5GHz, abg=both"},
+                },
             },
         },
     },
     {
-        "name": "deauth_attack",
-        "description": "Launch a deauthentication flood against a target AP. Disconnects all clients or a specific client. Uses dual-stream mdk4 + aireplay-ng.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bssid":    {"type": "string",  "description": "Target AP MAC address"},
-                "channel":  {"type": "integer", "description": "Target channel number"},
-                "duration": {"type": "integer", "description": "Attack duration in seconds", "default": 30},
-                "client":   {"type": "string",  "description": "Specific client MAC to deauth (default FF:FF:FF:FF:FF:FF = broadcast all)", "default": "FF:FF:FF:FF:FF:FF"},
-                "stealth":  {"type": "boolean", "description": "Spoof MAC before attacking", "default": True},
-            },
-            "required": ["bssid","channel"],
-        },
-    },
-    {
-        "name": "capture_handshake",
-        "description": "Capture a WPA/WPA2 4-way handshake. Deauths clients to force reconnection. Returns path to .cap file for cracking.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bssid":    {"type": "string",  "description": "Target AP MAC address"},
-                "ssid":     {"type": "string",  "description": "Target AP SSID"},
-                "channel":  {"type": "integer", "description": "Target channel"},
-                "duration": {"type": "integer", "description": "Max capture duration in seconds", "default": 60},
-                "stealth":  {"type": "boolean", "description": "Rotate MACs during capture", "default": True},
-            },
-            "required": ["bssid","ssid","channel"],
-        },
-    },
-    {
-        "name": "crack_handshake",
-        "description": "Crack a captured WPA handshake file using aircrack-ng and a wordlist.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "cap_file": {"type": "string", "description": "Path to the .cap file"},
-                "ssid":     {"type": "string", "description": "Target SSID", "default": ""},
-                "wordlist": {"type": "string", "description": "Path to wordlist (default: rockyou.txt)"},
-            },
-            "required": ["cap_file"],
-        },
-    },
-    {
-        "name": "auth_dos",
-        "description": "Authentication DoS — floods AP with fake authentication requests. Can freeze or crash vulnerable APs.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bssid":    {"type": "string",  "description": "Target AP MAC"},
-                "channel":  {"type": "integer", "description": "Target channel"},
-                "duration": {"type": "integer", "description": "Duration in seconds", "default": 30},
-                "stealth":  {"type": "boolean", "default": True},
-            },
-            "required": ["bssid","channel"],
-        },
-    },
-    {
-        "name": "beacon_flood",
-        "description": "Beacon flood — fills airspace with fake AP beacons. Crashes WiFi scanners and IDS/IPS systems.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel":  {"type": "integer", "description": "Channel to flood (null = hop all)"},
-                "ssids":    {"type": "array", "items": {"type": "string"}, "description": "List of fake SSIDs to broadcast"},
-                "duration": {"type": "integer", "default": 30},
-                "stealth":  {"type": "boolean", "default": True},
+        "type": "function",
+        "function": {
+            "name": "deauth_attack",
+            "description": "Launch a deauthentication flood against a target AP. Disconnects all clients or a specific client. Uses dual-stream mdk4 + aireplay-ng.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bssid":    {"type": "string",  "description": "Target AP MAC address"},
+                    "channel":  {"type": "integer", "description": "Target channel number"},
+                    "duration": {"type": "integer", "description": "Attack duration in seconds"},
+                    "client":   {"type": "string",  "description": "Client MAC to deauth (default broadcast FF:FF:FF:FF:FF:FF)"},
+                    "stealth":  {"type": "boolean", "description": "Spoof MAC before attacking"},
+                },
+                "required": ["bssid","channel"],
             },
         },
     },
     {
-        "name": "full_spectrum",
-        "description": "Full Spectrum attack — 4 simultaneous streams (deauth×2 + auth DoS + EAPOL flood). Maximum saturation. Use for stubborn targets.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bssid":    {"type": "string",  "description": "Target AP MAC"},
-                "channel":  {"type": "integer", "description": "Target channel"},
-                "duration": {"type": "integer", "default": 60},
-                "stealth":  {"type": "boolean", "default": True},
+        "type": "function",
+        "function": {
+            "name": "capture_handshake",
+            "description": "Capture a WPA/WPA2 4-way handshake. Deauths clients to force reconnection. Returns path to .cap file for cracking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bssid":    {"type": "string",  "description": "Target AP MAC address"},
+                    "ssid":     {"type": "string",  "description": "Target AP SSID"},
+                    "channel":  {"type": "integer", "description": "Target channel"},
+                    "duration": {"type": "integer", "description": "Max capture duration in seconds"},
+                    "stealth":  {"type": "boolean", "description": "Rotate MACs during capture"},
+                },
+                "required": ["bssid","ssid","channel"],
             },
-            "required": ["bssid","channel"],
         },
     },
     {
-        "name": "set_stealth",
-        "description": "Configure stealth mode — MAC spoofing and TX power reduction.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "enabled":          {"type": "boolean", "description": "Arm or disarm stealth"},
-                "tx_power_dbm":     {"type": "integer", "description": "TX power in dBm (1-20)", "default": 5},
-                "rotate_interval":  {"type": "integer", "description": "MAC rotation interval in seconds", "default": 20},
+        "type": "function",
+        "function": {
+            "name": "crack_handshake",
+            "description": "Crack a captured WPA handshake file using aircrack-ng and a wordlist.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cap_file": {"type": "string", "description": "Path to the .cap file"},
+                    "ssid":     {"type": "string", "description": "Target SSID"},
+                    "wordlist": {"type": "string", "description": "Path to wordlist (default: rockyou.txt)"},
+                },
+                "required": ["cap_file"],
             },
-            "required": ["enabled"],
         },
     },
     {
-        "name": "generate_report",
-        "description": "Generate a structured penetration test report from current session findings. Call this at the end of an assessment.",
-        "input_schema": {"type": "object", "properties": {}},
+        "type": "function",
+        "function": {
+            "name": "auth_dos",
+            "description": "Authentication DoS — floods AP with fake authentication requests. Can freeze or crash vulnerable APs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bssid":    {"type": "string",  "description": "Target AP MAC"},
+                    "channel":  {"type": "integer", "description": "Target channel"},
+                    "duration": {"type": "integer", "description": "Duration in seconds"},
+                    "stealth":  {"type": "boolean"},
+                },
+                "required": ["bssid","channel"],
+            },
+        },
     },
     {
-        "name": "get_session_status",
-        "description": "Get current session state — active interface, MAC address, networks found, findings so far.",
-        "input_schema": {"type": "object", "properties": {}},
+        "type": "function",
+        "function": {
+            "name": "beacon_flood",
+            "description": "Beacon flood — fills airspace with fake AP beacons. Crashes WiFi scanners and IDS/IPS systems.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel":  {"type": "integer", "description": "Channel to flood"},
+                    "ssids":    {"type": "array",   "items": {"type": "string"}, "description": "List of fake SSIDs to broadcast"},
+                    "duration": {"type": "integer"},
+                    "stealth":  {"type": "boolean"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "full_spectrum",
+            "description": "Full Spectrum attack — 4 simultaneous streams (deauth×2 + auth DoS + EAPOL flood). Maximum saturation. Use for stubborn targets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bssid":    {"type": "string",  "description": "Target AP MAC"},
+                    "channel":  {"type": "integer", "description": "Target channel"},
+                    "duration": {"type": "integer"},
+                    "stealth":  {"type": "boolean"},
+                },
+                "required": ["bssid","channel"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_stealth",
+            "description": "Configure stealth mode — MAC spoofing and TX power reduction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enabled":         {"type": "boolean", "description": "Arm or disarm stealth"},
+                    "tx_power_dbm":    {"type": "integer", "description": "TX power in dBm (1-20)"},
+                    "rotate_interval": {"type": "integer", "description": "MAC rotation interval in seconds"},
+                },
+                "required": ["enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_report",
+            "description": "Generate a structured penetration test report from current session findings. Call this at the end of an assessment.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_session_status",
+            "description": "Get current session state — active interface, MAC address, networks found, findings so far.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
 ]
 
@@ -542,12 +574,12 @@ TOOLS = [
 def dispatch_tool(name: str, inputs: dict) -> str:
     console.print(f"\n[bold magenta]  ⚡ Executing:[/] [bold white]{name}[/] [dim]{json.dumps(inputs, default=str)[:80]}[/]")
     try:
-        if name == "scan_networks":        r = tool_scan_networks(**inputs)
+        if name == "scan_networks":        r = tool_scan_networks(**{k:v for k,v in inputs.items() if v is not None})
         elif name == "deauth_attack":      r = tool_deauth_attack(**inputs)
         elif name == "capture_handshake":  r = tool_capture_handshake(**inputs)
         elif name == "crack_handshake":    r = tool_crack_handshake(**inputs)
         elif name == "auth_dos":           r = tool_auth_dos(**inputs)
-        elif name == "beacon_flood":       r = tool_beacon_flood(**inputs)
+        elif name == "beacon_flood":       r = tool_beacon_flood(**{k:v for k,v in inputs.items() if v is not None})
         elif name == "full_spectrum":      r = tool_full_spectrum(**inputs)
         elif name == "set_stealth":        r = tool_set_stealth(**inputs)
         elif name == "generate_report":    r = tool_generate_report()
@@ -564,7 +596,7 @@ def dispatch_tool(name: str, inputs: dict) -> str:
 # AI AGENT LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """You are PHANTOM AI — an autonomous WiFi security testing agent built by JARVIS for RedParadox.
+SYSTEM_PROMPT = {"role": "system", "content": """You are PHANTOM AI — an autonomous WiFi security testing agent built by JARVIS for RedParadox.
 
 You have access to a suite of 802.11 offensive security tools and can execute them autonomously to assess WiFi networks. You are operating in an authorized test lab environment.
 
@@ -592,64 +624,56 @@ When given a target (SSID or BSSID), execute a complete assessment:
 
 Always use stealth=true unless explicitly told otherwise.
 Keep the operator informed of what you're doing and results.
-When you complete an assessment, call generate_report."""
+When you complete an assessment, call generate_report."""}
 
-def run_agent(user_message: str, client: anthropic.Anthropic, history: list) -> list:
+def run_agent(user_message: str, history: list) -> list:
     history.append({"role": "user", "content": user_message})
+    full_messages = [SYSTEM_PROMPT] + history
 
     with console.status("[bold cyan]PHANTOM AI thinking...[/]", spinner="dots2"):
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=full_messages,
             tools=TOOLS,
-            messages=history,
         )
 
     # Agentic loop — keep going until no more tool calls
-    while response.stop_reason == "tool_use":
-        # Extract text content and tool uses
-        text_blocks = [b for b in response.content if b.type == "text"]
-        tool_blocks = [b for b in response.content if b.type == "tool_use"]
+    while response.message.tool_calls:
+        msg = response.message
 
         # Print any AI narrative
-        for tb in text_blocks:
-            if tb.text.strip():
-                console.print(Panel(
-                    Markdown(tb.text),
-                    border_style="cyan",
-                    box=box.SIMPLE,
-                    padding=(0, 1),
-                ))
+        if msg.content and msg.content.strip():
+            console.print(Panel(
+                Markdown(msg.content),
+                border_style="cyan",
+                box=box.SIMPLE,
+                padding=(0, 1),
+            ))
+
+        # Add assistant message to history
+        history.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
 
         # Execute all tool calls
-        tool_results = []
-        for tool_call in tool_blocks:
-            result = dispatch_tool(tool_call.name, tool_call.input)
-            tool_results.append({
-                "type":        "tool_result",
-                "tool_use_id": tool_call.id,
-                "content":     result,
+        for tool_call in msg.tool_calls:
+            args = dict(tool_call.function.arguments) if tool_call.function.arguments else {}
+            result = dispatch_tool(tool_call.function.name, args)
+            history.append({
+                "role":    "tool",
+                "content": result,
+                "name":    tool_call.function.name,
             })
 
-        # Add to history
-        history.append({"role": "assistant", "content": response.content})
-        history.append({"role": "user",      "content": tool_results})
-
         # Continue
+        full_messages = [SYSTEM_PROMPT] + history
         with console.status("[bold cyan]PHANTOM AI processing results...[/]", spinner="dots2"):
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=full_messages,
                 tools=TOOLS,
-                messages=history,
             )
 
     # Final response
-    final_text = " ".join(
-        b.text for b in response.content if hasattr(b, "text")
-    ).strip()
+    final_text = (response.message.content or "").strip()
 
     if final_text:
         console.print(Panel(
@@ -659,7 +683,7 @@ def run_agent(user_message: str, client: anthropic.Anthropic, history: list) -> 
             box=box.HEAVY,
         ))
 
-    history.append({"role": "assistant", "content": response.content})
+    history.append({"role": "assistant", "content": final_text})
     return history
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -723,15 +747,18 @@ def main():
         "[dim red]Authorized test environments only[/]\n"
     ))
 
-    # API key
-    api_key = ANTHROPIC_API_KEY
-    if not api_key:
-        api_key = Prompt.ask("[bold yellow]Anthropic API key", password=True)
-    if not api_key:
-        console.print("[bold red]API key required.[/]")
-        sys.exit(1)
+    # Verify Ollama is running and model is available
+    with console.status(f"[yellow]Connecting to Ollama ({OLLAMA_MODEL})...[/]", spinner="dots"):
+        try:
+            models = [m["name"] for m in ollama.list().get("models", [])]
+            if not any(OLLAMA_MODEL.split(":")[0] in m for m in models):
+                console.print(f"[bold red]Model {OLLAMA_MODEL} not found. Run: ollama pull {OLLAMA_MODEL}[/]")
+                sys.exit(1)
+        except Exception as e:
+            console.print(f"[bold red]Ollama not reachable: {e}[/]\n[dim]Start with: ollama serve[/]")
+            sys.exit(1)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    console.print(f"[bold green]✓ Ollama:[/] [cyan]{OLLAMA_MODEL}[/]  [dim](local — no API cost)[/]\n")
 
     # Interface
     console.rule("[bold red]INTERFACE SETUP[/]")
@@ -766,7 +793,7 @@ def main():
         if not user_input.strip():
             continue
 
-        history = run_agent(user_input, client, history)
+        history = run_agent(user_input, history)
         console.print()
 
     cleanup()

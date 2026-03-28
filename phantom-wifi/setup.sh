@@ -26,7 +26,10 @@ apt-get update -qq
 apt-get install -y aircrack-ng mdk4 python3-pip iw wireless-tools
 
 echo "[*] Installing Python packages..."
-pip3 install --break-system-packages anthropic rich 2>/dev/null || pip3 install anthropic rich
+pip3 install --break-system-packages ollama rich 2>/dev/null || pip3 install ollama rich
+
+echo "[*] Pulling AI model (llama3.1:8b)..."
+ollama pull llama3.1:8b
 
 echo "[*] Setting execute permissions..."
 chmod +x phantom-strike.py phantom-ai.py jarvis-wifi-ops.py
