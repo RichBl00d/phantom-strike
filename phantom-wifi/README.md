@@ -20,8 +20,7 @@
 
 ---
 
-Built and operated by **JARVIS** — AI system for **RedParadox**
-Running on Raspberry Pi 5, Jubail, Saudi Arabia
+Built by **JARVIS** — AI system for **RedParadox**
 
 ---
 
