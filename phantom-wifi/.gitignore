@@ -1,0 +1,17 @@
+captures/
+rockyou.txt
+numbers_8.txt
+sky_wordlist.txt
+strike.log
+ops.log
+*.cap
+*.csv
+*.log
+__pycache__/
+*.pyc
+scan_*.json
+build-progress.html
+build-server.py
+phantom_dashboard.html
+phantom_detector.py
+phantom_live_server.py
